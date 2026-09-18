@@ -28,9 +28,12 @@ logger = init_logger(__name__)
 # Headroom left after sizing from measured memory, beyond the measured transient
 # peak, for allocations that only happen after warmup. Such transients scale
 # with the model's working set rather than the device, so the margin is a share
-# of the measured peak with an absolute floor.
+# of the measured peak with an absolute floor. Real steps combine shapes warmup
+# exercises separately (a prompt-logprobs chunk alongside a live decode, the
+# rejection sampler over a full batch) and have been measured to exceed the
+# warmup peak by up to about a quarter.
 KV_CACHE_MARGIN_FLOOR_BYTES = 256 * (1 << 20)
-KV_CACHE_MARGIN_FRACTION = 0.25
+KV_CACHE_MARGIN_FRACTION = 0.5
 # Share of the headroom warmup leaves uncommitted, on top of the profiled
 # activation peak, for transients the profiling run does not exercise.
 KV_CACHE_WARMUP_RESERVE_FRACTION = 0.1

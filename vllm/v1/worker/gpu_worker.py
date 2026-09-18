@@ -105,7 +105,7 @@ from vllm.v1.worker.workspace import init_workspace_manager
 
 from ...model_executor.model_loader import TensorizerLoader
 from .gpu.cudagraph_utils import has_compiled_submodule
-from .gpu.warmup import warmup_kernels
+from .gpu.warmup import run_mixed_prefill_decode_warmup, warmup_kernels
 from .utils import request_memory
 
 logger = init_logger(__name__)
@@ -637,6 +637,16 @@ class Worker(WorkerBase):
         self.peak_activation_memory = (
             profile_result.transient_peak_headroom + cudagraph_memory_estimate_applied
         )
+        if self.cache_config.enable_extensible_kv_cache:
+            # Measured sizing keeps this peak free: count what the caching
+            # allocator had to hold from the device for it, rounding and
+            # fragmentation included, since the first real steps pay that again.
+            stats = torch.accelerator.memory_stats(self.device)
+            self.peak_activation_memory = max(
+                self.peak_activation_memory,
+                stats.get("reserved_bytes.all.peak", 0)
+                - stats.get("allocated_bytes.all.current", 0),
+            )
         self.cudagraph_memory_estimate = cudagraph_memory_estimate
 
         self.available_kv_cache_memory_bytes = (
@@ -930,6 +940,16 @@ class Worker(WorkerBase):
         if self.use_v2_model_runner:
             # A workspace resize after capture frees what the graphs point at.
             warmup_kernels(self.model_runner, self.execute_model, self.sample_tokens)
+            if self.cache_config.enable_extensible_kv_cache:
+                # Profiling ran the full token budget without attention. Run it
+                # as a real step so the peak that measured sizing keeps free
+                # covers the largest prefill the scheduler can issue.
+                run_mixed_prefill_decode_warmup(
+                    self._v2_model_runner(),
+                    self.execute_model,
+                    self.sample_tokens,
+                    self.scheduler_config.max_num_batched_tokens,
+                )
 
         cuda_graph_memory_bytes = 0
         if not self.model_config.enforce_eager:
